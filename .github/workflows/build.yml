@@ -1,24 +1,29 @@
-name: Build libimobiledevice + All Deps (Universal macOS 12+)
-
+name: Build libimobiledevice (macOS 13+ Universal)
 on:
-  workflow_dispatch:  # 允许手动点按钮运行
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: macos-13
+    # 最新 runner，秒启动，不排队
+    runs-on: macos-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install tools
+      - name: Install build dependencies
         run: |
+          brew update
           brew install autoconf automake libtool pkg-config openssl@3
 
-      - name: Build all dependencies + universal binaries
+      - name: Build full toolchain (macOS 13+ universal)
         run: |
           set -e
-          export MACOSX_DEPLOYMENT_TARGET=12.0
-          export PREFIX=$(pwd)/dest
+          
+          # ==============================
+          # 核心：强制最低运行 macOS 13.0
+          # ==============================
+          export MACOSX_DEPLOYMENT_TARGET=13.0
+          export PREFIX=$(pwd)/output
           export OPENSSL_PATH=$(brew --prefix openssl@3)
 
           # 下载所有依赖源码
@@ -26,38 +31,36 @@ jobs:
           git clone https://github.com/libimobiledevice/libusbmuxd.git
           git clone https://github.com/libimobiledevice/usbmuxd.git
 
-          function build_dep() {
-            local dir=$1
-            local extra_args=$2
-            cd "$dir"
-            ./autogen.sh $extra_args \
-              --enable-static --disable-shared \
-              CFLAGS="-arch x86_64 -arch arm64 -mmacosx-version-min=12.0" \
-              LDFLAGS="-arch x86_64 -arch arm64 -mmacosx-version-min=12.0"
-            make -j$(sysctl -n hw.ncpu)
+          # 通用编译函数：双架构 + 最低 macOS13
+          build() {
+            local src_dir="$1"
+            local extra_args="$2"
+            
+            cd "$src_dir"
+            ./autogen.sh \
+              --prefix="$PREFIX" \
+              --enable-static \
+              --disable-shared \
+              $extra_args \
+              CFLAGS="-arch x86_64 -arch arm64 -mmacosx-version-min=13.0 -I$PREFIX/include -I$OPENSSL_PATH/include" \
+              LDFLAGS="-arch x86_64 -arch arm64 -mmacosx-version-min=13.0 -L$PREFIX/lib -L$OPENSSL_PATH/lib"
+            
+            make -j$(sysctl -n hw.logicalcpu)
             make install
             cd ..
           }
 
-          # 编译依赖
-          build_dep libplist "--prefix=$PREFIX"
-          build_dep libusbmuxd "--prefix=$PREFIX --with-libplist=$PREFIX"
-          
-          # 编译 libimobiledevice
-          ./autogen.sh --prefix=$PREFIX \
-            --enable-static --disable-shared \
-            --without-cython \
-            CFLAGS="-arch x86_64 -arch arm64 -mmacosx-version-min=12.0 -I$PREFIX/include -I$OPENSSL_PATH/include" \
-            LDFLAGS="-arch x86_64 -arch arm64 -mmacosx-version-min=12.0 -L$PREFIX/lib -L$OPENSSL_PATH/lib"
+          # 按顺序编译依赖
+          build libplist
+          build libusbmuxd
+          build libimobiledevice "--without-cython"
+          build usbmuxd
 
-          make -j$(sysctl -n hw.ncpu)
-          make install
-
-          # 打包
-          zip -j libimobiledevice-macos-universal.zip $PREFIX/bin/* $PREFIX/sbin/*
+          # 打包所有工具
+          zip -j libimobiledevice_mac13+.zip $PREFIX/bin/* $PREFIX/sbin/*
 
       - name: Upload final package
         uses: actions/upload-artifact@v4
         with:
-          name: libimobiledevice-macos-universal
-          path: "*.zip"
+          name: libimobiledevice_mac13+
+          path: "libimobiledevice_mac13+.zip"
